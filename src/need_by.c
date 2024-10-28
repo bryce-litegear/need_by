@@ -20,6 +20,22 @@ void need_by_tick(void)
     time_now += uSec_per_tick;
 }
 
+typedef struct protect_state
+{
+    uint32_t some_reg;
+} protect_state;
+
+static protect_state enter_protect(void)
+{
+    return (protect_state){.some_reg=1};
+}
+
+static void exit_protect(protect_state ps)
+{
+    
+}
+
+
 // for testing
 uint64_t get_nb_now(void) 
 {
@@ -40,24 +56,29 @@ static void nb_dequeue(need_by_queue *nbq, need_by_entry *entry)
 {
     if(nbq && entry)
     {
-        if(nbq->next == entry)
-        {
-            nbq->next = entry->next;
-        }
-        else
-        {
-            need_by_entry *from = nbq->next;
-            need_by_entry *next = nbq->next->next;
-            // find entry
-            while(next && entry != next)
+        protect_state ps = enter_protect();
+        
+            if(nbq->next == entry)
             {
-                from = next;
-                next = next->next;
+                nbq->next = entry->next;
+                if(nbq->last == entry) nbq->last = nbq->next;             
             }
-            if(next) from->next = entry->next; 
-     
-        }
-        if(nbq->last == entry) nbq->last = NULL;
+            else
+            {
+                need_by_entry *from = nbq->next;
+                need_by_entry *next = nbq->next->next;
+                // find entry
+                while(next && entry != next)
+                {
+                    from = next;
+                    next = next->next;
+                }
+                if(next) from->next = entry->next; 
+                if(nbq->last == entry) nbq->last = from;
+            }
+
+        exit_protect(ps);
+
         entry->need_by_time = 0;  // free the handle
         entry->next = entry;      // free the handle 
     }
@@ -67,7 +88,10 @@ static void nb_dequeue(need_by_queue *nbq, need_by_entry *entry)
 // try to run top of specified queue
 static need_by_return try_to_run(need_by_queue *nbq)
 {
-    if(nbq->active_task) return NB_CONTINUE; // already task running (coop recursion)
+    if(nbq->active_task) 
+    {
+        return NB_CONTINUE; // already task running (coop recursion)
+    }
     while(nbq->next) // run first defined task, clearing any non-tasks along the way
     {
         // deque next
@@ -80,7 +104,7 @@ static need_by_return try_to_run(need_by_queue *nbq)
         // now try to run
         if(task)
         {
-            task(context);
+            task(context, NB_NORMAL_CALL);
             nbq->active_task = NULL; // signal task return
             return NB_TASK_RAN; 
         }
@@ -92,7 +116,10 @@ static need_by_return try_to_run(need_by_queue *nbq)
 
 static need_by_return run_first_timedout(need_by_queue *nbq)
 {
-    if(nbq->to_task) return NB_CONTINUE; // already running to task
+    if(nbq->to_task)
+    {
+        return NB_CONTINUE; // already running to task
+    }
     if(nbq->next) // items are in the queue
     {
 #ifdef TEST
@@ -109,7 +136,7 @@ static need_by_return run_first_timedout(need_by_queue *nbq)
                 nb_dequeue(nbq, nbq->to_task);
                 if(task)
                 {
-                    task(context);
+                    task(context, NB_TIMED_OUT);
                     nbq->to_task = NULL;
                     return NB_TASK_RAN;
                 }
@@ -160,7 +187,11 @@ static need_by_return try_next_pri(need_by_obj *nb)
             while(nb->busy_queue->next) // something in this queue
             {
                 // try to run and return if it does
-                if( try_to_run(nb->busy_queue) ) return NB_TASK_RAN;
+                if( try_to_run(nb->busy_queue) ) 
+                {   
+                    nb->busy_queue = NULL; // we ran one so restart
+                    return NB_TASK_RAN;
+                }
             }
         }
         nb->busy_queue = NULL;
@@ -171,7 +202,7 @@ static need_by_return try_next_pri(need_by_obj *nb)
 void do_need_by_tasks(need_by_obj *nb)
 {
     // first entry, no active priority
-    if(NULL == nb->active_queue)
+    if(NULL == nb->active_queue && NULL == nb->busy_queue)
     {
         need_by_return ret = NB_CONTINUE;
         while(ret != NB_Q_CLEAR)
@@ -235,16 +266,18 @@ void queue_need_by(need_by_obj *nbq, need_by_entry *entry, need_by_priority prio
     {
         if(priority > NB_NO_RUSH || priority < NB_ASAP) priority = NB_NO_RUSH;
         need_by_queue *q = &nbq->queues[priority];
-        if(q->last)
-        {
-            q->last->next = entry;
-            q->last = entry;
-        }
-        else // q was empty
-        {
-            q->last = entry;  
-            q->next = entry;
-        }
+        protect_state ps = enter_protect();
+          if(q->last)
+          {
+              q->last->next = entry;
+              q->last = entry;
+          }
+          else // q was empty
+          {
+              q->last = entry;  
+              q->next = entry;
+          }
+        exit_protect(ps);
     }
 }
 

@@ -18,8 +18,15 @@
 #define STATIC static
 #endif
 
+typedef enum need_by_status
+{
+    NB_NORMAL_CALL,
+    NB_TIMED_OUT,
+} need_by_status;
+
+
 // our task are of the form
-typedef void (*need_by_task)(void *context);
+typedef void (*need_by_task)(void *context, need_by_status nb_status);
 
 // used by the priority queues
 typedef struct need_by_entry need_by_entry;
